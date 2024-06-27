@@ -52,7 +52,7 @@ pub fn build(b: *std.Build) !void {
     // Our tests require libc on Linux and Mac. Note that libxev itself
     // does NOT require libc.
     const test_libc = switch (target.result.os.tag) {
-        .linux, .macos => true,
+        .linux, .macos, .freebsd => true,
         else => false,
     };
 

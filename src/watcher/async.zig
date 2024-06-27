@@ -5,18 +5,21 @@ const assert = std.debug.assert;
 const posix = std.posix;
 const common = @import("common.zig");
 
+pub extern "c" fn eventfd(initval: c_uint, flags: c_uint) c_int;
+
 pub fn Async(comptime xev: type) type {
     return switch (xev.backend) {
         // Supported, uses eventfd
         .io_uring,
         .epoll,
+        .kqueue,
         => AsyncEventFd(xev),
 
         // Supported, uses the backend API
         .wasi_poll => AsyncLoopState(xev, xev.Loop.threaded),
 
         // Supported, uses mach ports
-        .kqueue => AsyncMachPort(xev),
+        // .kqueue => AsyncMachPort(xev),
         .iocp => AsyncIOCP(xev),
     };
 }
@@ -36,7 +39,8 @@ fn AsyncEventFd(comptime xev: type) type {
         /// to be woken up. The completion must be allocated in advance.
         pub fn init() !Self {
             return .{
-                .fd = try std.posix.eventfd(0, 0),
+                // .fd = try std.posix.eventfd(0, 0),
+                .fd = eventfd(0, 0),
             };
         }
 

@@ -37,7 +37,7 @@ pub const Backend = enum {
     pub fn default() Backend {
         return @as(?Backend, switch (builtin.os.tag) {
             .linux => .io_uring,
-            .ios, .macos => .kqueue,
+            .ios, .macos, .freebsd => .kqueue,
             .wasi => .wasi_poll,
             .windows => .iocp,
             else => null,

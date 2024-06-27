@@ -13,6 +13,12 @@ const ThreadPool = main.ThreadPool;
 
 const log = std.log.scoped(.libxev_kqueue);
 
+const NOTE_EXIT_FLAGS = switch (builtin.os.tag) {
+    .ios, .macos => posix.system.NOTE_EXIT | posix.system.NOTE_EXITSTATUS,
+    .freebsd => posix.system.NOTE_EXIT,
+    else => @compileError("kqueue not supported yet for target OS"),
+};
+
 pub const Loop = struct {
     const TimerHeap = heap.Intrusive(Timer, void, Timer.less);
     const TaskCompletionQueue = queue_mpsc.Intrusive(Completion);
@@ -24,8 +30,8 @@ pub const Loop = struct {
     /// an empty message to this port can be used to wake up the loop
     /// at any time. Waking up the loop via this port won't trigger any
     /// particular completion, it just forces tick to cycle.
-    mach_port: posix.system.mach_port_name_t,
-    mach_port_buffer: [32]u8 = undefined,
+    // mach_port: posix.system.mach_port_name_t,
+    // mach_port_buffer: [32]u8 = undefined,
 
     /// The number of active completions. This DOES NOT include completions that
     /// are queued in the submissions queue.
@@ -81,21 +87,21 @@ pub const Loop = struct {
         errdefer posix.close(fd);
 
         // Create our mach port that we use for wakeups.
-        const mach_self = posix.system.mach_task_self();
-        var mach_port: posix.system.mach_port_name_t = undefined;
-        switch (posix.system.getKernError(posix.system.mach_port_allocate(
-            mach_self,
-            @intFromEnum(posix.system.MACH_PORT_RIGHT.RECEIVE),
-            &mach_port,
-        ))) {
-            .SUCCESS => {}, // Success
-            else => return error.MachPortAllocFailed,
-        }
-        errdefer _ = posix.system.mach_port_deallocate(mach_self, mach_port);
+        // const mach_self = posix.system.mach_task_self();
+        // var mach_port: posix.system.mach_port_name_t = undefined;
+        // switch (posix.system.getKernError(posix.system.mach_port_allocate(
+        //     mach_self,
+        //     @intFromEnum(posix.system.MACH_PORT_RIGHT.RECEIVE),
+        //     &mach_port,
+        // ))) {
+        //     .SUCCESS => {}, // Success
+        //     else => return error.MachPortAllocFailed,
+        // }
+        // errdefer _ = posix.system.mach_port_deallocate(mach_self, mach_port);
 
         var res: Loop = .{
             .kqueue_fd = fd,
-            .mach_port = mach_port,
+            // .mach_port = mach_port,
             .thread_pool = options.thread_pool,
             .thread_pool_completions = undefined,
             .cached_now = undefined,
@@ -108,10 +114,10 @@ pub const Loop = struct {
     /// were unprocessed are lost -- their callbacks will never be called.
     pub fn deinit(self: *Loop) void {
         posix.close(self.kqueue_fd);
-        _ = posix.system.mach_port_deallocate(
-            posix.system.mach_task_self(),
-            self.mach_port,
-        );
+        // _ = posix.system.mach_port_deallocate(
+        //     posix.system.mach_task_self(),
+        //     self.mach_port,
+        // );
     }
 
     /// Stop the loop. This can only be called from the main thread.
@@ -299,30 +305,30 @@ pub const Loop = struct {
 
             // Add our event so that we wake up when our mach port receives an
             // event. We have to add here because we need a stable self pointer.
-            const events = [_]Kevent{.{
-                .ident = @as(usize, @intCast(self.mach_port)),
-                .filter = posix.system.EVFILT_MACHPORT,
-                .flags = posix.system.EV_ADD | posix.system.EV_ENABLE,
-                .fflags = posix.system.MACH_RCV_MSG,
-                .data = 0,
-                .udata = 0,
-                .ext = .{
-                    @intFromPtr(&self.mach_port_buffer),
-                    self.mach_port_buffer.len,
-                },
-            }};
-            const n = kevent_syscall(
-                self.kqueue_fd,
-                &events,
-                events[0..0],
-                null,
-            ) catch |err| {
-                // We reset initialization because we can't do anything
-                // safely unless we get this mach port registered!
-                self.flags.init = false;
-                return err;
-            };
-            assert(n == 0);
+            // const events = [_]Kevent{.{
+            //     .ident = @as(usize, @intCast(self.mach_port)),
+            //     .filter = posix.system.EVFILT_MACHPORT,
+            //     .flags = posix.system.EV_ADD | posix.system.EV_ENABLE,
+            //     .fflags = posix.system.MACH_RCV_MSG,
+            //     .data = 0,
+            //     .udata = 0,
+            //     .ext = .{
+            //         @intFromPtr(&self.mach_port_buffer),
+            //         self.mach_port_buffer.len,
+            //     },
+            // }};
+            // const n = kevent_syscall(
+            //     self.kqueue_fd,
+            //     &events,
+            //     events[0..0],
+            //     null,
+            // ) catch |err| {
+            //     // We reset initialization because we can't do anything
+            //     // safely unless we get this mach port registered!
+            //     self.flags.init = false;
+            //     return err;
+            // };
+            // assert(n == 0);
         }
 
         // The list of events, used as both a changelist and eventlist.
@@ -775,10 +781,10 @@ pub const Loop = struct {
                 break :action .{ .kevent = {} };
             },
 
-            .machport => action: {
-                ev.* = c.kevent().?;
-                break :action .{ .kevent = {} };
-            },
+            // .machport => action: {
+            //     ev.* = c.kevent().?;
+            //     break :action .{ .kevent = {} };
+            // },
 
             .proc => action: {
                 ev.* = c.kevent().?;
@@ -948,31 +954,32 @@ pub const Loop = struct {
     /// Sends an empty message to this loop's mach port so that it wakes
     /// up if it is blocking on kevent().
     fn wakeup(self: *Loop) !void {
+        _ = self;
         // This constructs an empty mach message. It has no data.
-        var msg: posix.system.mach_msg_header_t = .{
-            .msgh_bits = @intFromEnum(posix.system.MACH_MSG_TYPE.MAKE_SEND_ONCE),
-            .msgh_size = @sizeOf(posix.system.mach_msg_header_t),
-            .msgh_remote_port = self.mach_port,
-            .msgh_local_port = posix.system.MACH_PORT_NULL,
-            .msgh_voucher_port = undefined,
-            .msgh_id = undefined,
-        };
+        // var msg: posix.system.mach_msg_header_t = .{
+        //     .msgh_bits = @intFromEnum(posix.system.MACH_MSG_TYPE.MAKE_SEND_ONCE),
+        //     .msgh_size = @sizeOf(posix.system.mach_msg_header_t),
+        //     .msgh_remote_port = self.mach_port,
+        //     .msgh_local_port = posix.system.MACH_PORT_NULL,
+        //     .msgh_voucher_port = undefined,
+        //     .msgh_id = undefined,
+        // };
 
-        return switch (posix.system.getMachMsgError(
-            posix.system.mach_msg(
-                &msg,
-                posix.system.MACH_SEND_MSG,
-                msg.msgh_size,
-                0,
-                posix.system.MACH_PORT_NULL,
-                posix.system.MACH_MSG_TIMEOUT_NONE,
-                posix.system.MACH_PORT_NULL,
-            ),
-        )) {
-            .SUCCESS => {},
-            .SEND_NO_BUFFER => {}, // Buffer full, will wake up
-            else => error.MachMsgFailed,
-        };
+        // return switch (posix.system.getMachMsgError(
+        //     posix.system.mach_msg(
+        //         &msg,
+        //         posix.system.MACH_SEND_MSG,
+        //         msg.msgh_size,
+        //         0,
+        //         posix.system.MACH_PORT_NULL,
+        //         posix.system.MACH_MSG_TIMEOUT_NONE,
+        //         posix.system.MACH_PORT_NULL,
+        //     ),
+        // )) {
+        //     .SUCCESS => {},
+        //     .SEND_NO_BUFFER => {}, // Buffer full, will wake up
+        //     else => error.MachMsgFailed,
+        // };
     }
 };
 
@@ -1079,28 +1086,28 @@ pub const Completion = struct {
                 .udata = @intFromPtr(self),
             }),
 
-            .machport => kevent: {
-                // We can't use |*v| above because it crahses the Zig
-                // compiler (as of 0.11.0-dev.1413). We can retry another time.
-                const v = &self.op.machport;
-                const slice: []u8 = switch (v.buffer) {
-                    .slice => |slice| slice,
-                    .array => |*arr| arr,
-                };
+            // .machport => kevent: {
+            //     // We can't use |*v| above because it crahses the Zig
+            //     // compiler (as of 0.11.0-dev.1413). We can retry another time.
+            //     const v = &self.op.machport;
+            //     const slice: []u8 = switch (v.buffer) {
+            //         .slice => |slice| slice,
+            //         .array => |*arr| arr,
+            //     };
 
-                // The kevent below waits for a machport to have a message
-                // available AND automatically reads the message into the
-                // buffer since MACH_RCV_MSG is set.
-                break :kevent .{
-                    .ident = @intCast(v.port),
-                    .filter = posix.system.EVFILT_MACHPORT,
-                    .flags = posix.system.EV_ADD | posix.system.EV_ENABLE,
-                    .fflags = posix.system.MACH_RCV_MSG,
-                    .data = 0,
-                    .udata = @intFromPtr(self),
-                    .ext = .{ @intFromPtr(slice.ptr), slice.len },
-                };
-            },
+            //     // The kevent below waits for a machport to have a message
+            //     // available AND automatically reads the message into the
+            //     // buffer since MACH_RCV_MSG is set.
+            //     break :kevent .{
+            //         .ident = @intCast(v.port),
+            //         .filter = posix.system.EVFILT_MACHPORT,
+            //         .flags = posix.system.EV_ADD | posix.system.EV_ENABLE,
+            //         .fflags = posix.system.MACH_RCV_MSG,
+            //         .data = 0,
+            //         .udata = @intFromPtr(self),
+            //         .ext = .{ @intFromPtr(slice.ptr), slice.len },
+            //     };
+            // },
 
             .proc => |v| kevent_init(.{
                 .ident = @intCast(v.pid),
@@ -1248,16 +1255,16 @@ pub const Completion = struct {
             // Our machport operation ALWAYS has MACH_RCV set so there
             // is no operation to perform. kqueue automatically reads in
             // the mach message into the read buffer.
-            .machport => .{
-                .machport = {},
-            },
+            // .machport => .{
+            //     .machport = {},
+            // },
 
             // For proc watching, it is identical to the syscall result.
             .proc => res: {
                 const ev = ev_ orelse break :res .{ .proc = ProcError.MissingKevent };
 
                 // If we have the exit status, we read it.
-                if (ev.fflags & (posix.system.NOTE_EXIT | posix.system.NOTE_EXITSTATUS) > 0) {
+                if (ev.fflags & NOTE_EXIT_FLAGS > 0) {
                     const data: u32 = @intCast(ev.data);
                     if (posix.W.IFEXITED(data)) break :res .{
                         .proc = posix.W.EXITSTATUS(data),
@@ -1359,13 +1366,13 @@ pub const Completion = struct {
                 },
             },
 
-            .machport => .{
-                .machport = switch (errno) {
-                    .SUCCESS => {},
-                    .CANCELED => error.Canceled,
-                    else => |err| posix.unexpectedErrno(err),
-                },
-            },
+            // .machport => .{
+            //     .machport = switch (errno) {
+            //         .SUCCESS => {},
+            //         .CANCELED => error.Canceled,
+            //         else => |err| posix.unexpectedErrno(err),
+            //     },
+            // },
 
             .proc => .{
                 .proc = switch (errno) {
@@ -1434,7 +1441,7 @@ pub const OperationType = enum {
     shutdown,
     timer,
     cancel,
-    machport,
+    // machport,
     proc,
 };
 
@@ -1520,14 +1527,14 @@ pub const Operation = union(OperationType) {
         c: *Completion,
     },
 
-    machport: struct {
-        port: posix.system.mach_port_name_t,
-        buffer: ReadBuffer,
-    },
+    // machport: struct {
+    //     port: posix.system.mach_port_name_t,
+    //     buffer: ReadBuffer,
+    // },
 
     proc: struct {
         pid: posix.pid_t,
-        flags: u32 = posix.system.NOTE_EXIT | posix.system.NOTE_EXITSTATUS,
+        flags: u32 = NOTE_EXIT_FLAGS,
     },
 };
 
@@ -1547,7 +1554,7 @@ pub const Result = union(OperationType) {
     shutdown: ShutdownError!void,
     timer: TimerError!TimerTrigger,
     cancel: CancelError!void,
-    machport: MachPortError!void,
+    // machport: MachPortError!void,
     proc: ProcError!u32,
 };
 
@@ -1588,10 +1595,10 @@ pub const WriteError = posix.KEventError ||
     Unexpected,
 };
 
-pub const MachPortError = posix.KEventError || error{
-    Canceled,
-    Unexpected,
-};
+// pub const MachPortError = posix.KEventError || error{
+//     Canceled,
+//     Unexpected,
+// };
 
 pub const ProcError = posix.KEventError || error{
     Canceled,
@@ -1708,6 +1715,7 @@ const Timer = struct {
 /// This lets us support both Mac and non-Mac platforms.
 const Kevent = switch (builtin.os.tag) {
     .ios, .macos => posix.system.kevent64_s,
+    .freebsd => std.c.Kevent,
     else => @compileError("kqueue not supported yet for target OS"),
 };
 
@@ -2390,6 +2398,7 @@ test "kqueue: socket accept/connect/send/recv/close" {
 }
 
 test "kqueue: file IO on thread pool" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
     const testing = std.testing;
 
     var tpool = main.ThreadPool.init(.{});
